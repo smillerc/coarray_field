@@ -1,0 +1,30 @@
+#! Demonstrates the usage of simple tests.
+
+#:include 'fytest.fypp'
+
+#:block TEST_LIBRARY
+#:endblock TEST_LIBRARY
+
+#:block TEST_SUITE('simple')
+  ! use mymath
+  implicit none
+
+#:contains
+
+  #! Testing for various special factorial values
+
+  #:block TEST('imageindex')
+    real, allocatable, dimension(:) :: arr[:]
+    integer :: me = 0
+    me = this_image()
+
+    allocate(arr(10)[*])
+    arr(:)[me] = this_image()  
+
+    @:ASSERT_EQ(me, arr(1)[me])
+  #:endblock
+
+#:endblock TEST_SUITE
+
+#:block TEST_DRIVER()
+#:endblock TEST_DRIVER
