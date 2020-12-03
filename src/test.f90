@@ -1,6 +1,6 @@
 module test_module
   use iso_fortran_env
-  implicit none(type, external)
+  implicit none
 
   type :: field_t
     real(real64), dimension(:, :), allocatable :: data

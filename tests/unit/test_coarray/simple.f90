@@ -1,5 +1,5 @@
 module test_mod
-  implicit none(type, external)
+  implicit none
 contains
   subroutine simple_test()
     real, allocatable, dimension(:) :: arr[:]
@@ -13,6 +13,6 @@ end module test_mod
 
 program test_coarray
   use test_mod
-  implicit none(type, external)
+  implicit none
   call simple_test()
 end program test_coarray

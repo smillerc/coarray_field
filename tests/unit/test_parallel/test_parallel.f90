@@ -1,7 +1,15 @@
 program test_parallel
   use iso_fortran_env
-  use mod_parallel
-  implicit none(type, external)
+  use mod_parallel, only: tile_indices, tile_neighbors_2d, &
+                          jlo_neighbor => DOWN, &
+                          ilo_neighbor => LEFT, &
+                          ihi_neighbor => RIGHT, &
+                          jhi_neighbor => UP, &
+                          ilo_jlo_neighbor => LOWER_LEFT, &
+                          ihi_jlo_neighbor => LOWER_RIGHT, &
+                          ilo_jhi_neighbor => UPPER_LEFT, &
+                          ihi_jhi_neighbor => UPPER_RIGHT
+  implicit none
 
   integer, parameter :: lower_left = 1
   integer, parameter :: down = 2

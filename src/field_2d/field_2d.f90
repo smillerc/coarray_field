@@ -1,28 +1,47 @@
-module mod_field_2d
-  !> Summary: Provide the base 2D field class. This originates from https://github.com/modern-fortran/tsunami
-  !> Date: 08/18/2020
-  !> Author: Milan Curcic, Sam Miller (minor mods)
-  !> Notes:
-  !> References:
+! MIT License
+! Copyright (c) 2020 Sam Miller
+! Permission is hereby granted, free of charge, to any person obtaining a copy
+! of this software and associated documentation files (the "Software"), to deal
+! in the Software without restriction, including without limitation the rights
+! to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+! copies of the Software, and to permit persons to whom the Software is
+! furnished to do so, subject to the following conditions:
+!
+! The above copyright notice and this permission notice shall be included in all
+! copies or substantial portions of the Software.
+!
+! THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+! IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+! FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+! AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+! LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+! OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+! SOFTWARE.
+
+module mod_field
+  !< Summary: Provide the base 2D field class. This originates from https://github.com/modern-fortran/tsunami
+  !< Date: 08/18/2020
+  !< Author: Milan Curcic (original), Sam Miller (extensions)
+  !< Notes:
+  !< References:
   !      [1] Milan Curcic, "Modern Fortran: Building efficient parallel applications", 2020
 
   use, intrinsic :: iso_fortran_env, only: ik => int32, rk => real64, std_err => error_unit
   use, intrinsic :: iso_c_binding
-  use h5fortran, only: hdf5_file
+  use h5fortran, only: hdf5_file, hsize_t
+  use mod_error, only: error_msg
   use mod_parallel, only: tile_indices, tile_neighbors_2d
+  use mod_parallel, only: jlo_neighbor => DOWN, &
+                          ilo_neighbor => LEFT, &
+                          ihi_neighbor => RIGHT, &
+                          jhi_neighbor => UP, &
+                          ilo_jlo_neighbor => LOWER_LEFT, &
+                          ihi_jlo_neighbor => LOWER_RIGHT, &
+                          ilo_jhi_neighbor => UPPER_LEFT, &
+                          ihi_jhi_neighbor => UPPER_RIGHT
   use mod_globals, only: enable_debug_print, debug_print
 
-  implicit none(type, external)
-
-  ! Neighbor image indices
-  integer(ik), parameter :: lower_left = 1  !< lower left neighbor image
-  integer(ik), parameter :: down = 2        !< neighbor image below
-  integer(ik), parameter :: lower_right = 3 !< lower right neigbor image
-  integer(ik), parameter :: left = 4        !< neighbor image to the left
-  integer(ik), parameter :: right = 5       !< neighbor image to the right
-  integer(ik), parameter :: upper_left = 6  !< upper left neighbor image
-  integer(ik), parameter :: up = 7          !< neighbor image above
-  integer(ik), parameter :: upper_right = 8 !< upper right neighbor image
+  implicit none
 
   private
   public :: field_2d_t, field_2d
@@ -75,8 +94,14 @@ module mod_field_2d
     logical, public :: on_jlo_bc = .false. !< does this field live on the +j boundary?
     logical, public :: on_jhi_bc = .false. !< does this field live on the -j boundary?
 
+    ! Sync settings: VERY IMPORTANT, check your algorithms to see if you need this to sync on every 
+    ! call to =, otherwise be selective about it. This will reduce communication, which is a good thing
+    logical :: sync_on_equal = .false. !< Call sync_edges whenever the (=) operator is called (very crucial in some cases)
+    
     ! Parallel neighbor information
-    integer(ik), dimension(8) :: neighbors = 0 !< (lower_left, down, lower_right, left, right, upper_left, up, upper_right); parallel neighbor image indices
+    integer(ik), dimension(8) :: neighbors = 0 
+    !< (ilo_jlo, jlo, ihi_jlo, ilo, ihi, ilo_jhi, jhi, ihi_jhi); parallel neighbor image indices
+    
     integer(ik) :: host_image_id = 0 !< what image owns this field instance?
 
     ! OpenCL stuff
@@ -97,11 +122,11 @@ module mod_field_2d
     procedure, pass(lhs) :: assign_real_scalar, assign_field
 
     ! Public methods
-    ! procedure, public :: make_non_dimensional
-    ! procedure, public :: make_dimensional
+    procedure, public :: make_non_dimensional
+    procedure, public :: make_dimensional
     procedure, public :: zero_out_halo
-    ! procedure, public :: has_nans
-    ! procedure, public :: has_negatives
+    procedure, public :: has_nans
+    procedure, public :: has_negatives
     procedure, public :: write_field
     procedure, public :: gather
     procedure, public :: sync_edges
@@ -251,22 +276,22 @@ module mod_field_2d
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
     end function field_maxval_cpu
-  
+
     module function field_maxloc_cpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       integer(ik), dimension(2) :: res
     end function field_maxloc_cpu
-  
+
     module function field_minval_cpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
     end function field_minval_cpu
-  
+
     module function field_minloc_cpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       integer(ik), dimension(2) :: res
     end function field_minloc_cpu
-    
+
     module function field_sum_cpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
@@ -389,22 +414,22 @@ module mod_field_2d
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
     end function field_maxval_gpu
-  
+
     module function field_maxloc_gpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       integer(ik), dimension(2) :: res
     end function field_maxloc_gpu
-  
+
     module function field_minval_gpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
     end function field_minval_gpu
-  
+
     module function field_minloc_gpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       integer(ik), dimension(2) :: res
     end function field_minloc_gpu
-    
+
     module function field_sum_gpu(f) result(res)
       class(field_2d_t), intent(in) :: f
       real(rk) :: res
@@ -419,7 +444,7 @@ contains
     character(len=*), intent(in) :: long_name     !< long name, e.g. 'density'
     character(len=*), intent(in) :: units         !< physical units, e.g. 'g/cc'
     character(len=*), intent(in) :: descrip       !< description, e.g. 'Cell-centered density'
-    integer(ik), dimension(2), intent(in) :: global_dims !< (i,j); domain size in x and y
+    integer(ik), dimension(2), intent(in) :: global_dims !< (i,j); domain size in x and y (not including halo)
     integer(ik), intent(in) :: n_halo_cells
 
     ! Locals
@@ -483,17 +508,22 @@ contains
     !< Performs a gather of field data to image.
     class(field_2d_t), intent(in) :: self
     integer(ik), intent(in) :: image
+    integer(ik) :: ilo, ihi, jlo, jhi
     real(rk) :: gather(self%global_dims(1), self%global_dims(2))
-
     real(rk), allocatable :: gather_coarray(:, :)[:]
-    allocate(gather_coarray(self%global_dims(1), self%global_dims(2))[*])
 
-    associate(is => self%lbounds(1), ie => self%ubounds(1), &
-              js => self%lbounds(2), je => self%ubounds(2))
-      gather_coarray(is:ie, js:je)[image] = self%data(is:ie, js:je)
-      sync all
-      if(this_image() == image) gather = gather_coarray
-    end associate
+
+    if(.not. allocated(gather_coarray)) allocate(gather_coarray(self%global_dims(1), self%global_dims(2))[*])
+
+    ilo = self%lbounds(1)
+    ihi = self%ubounds(1)
+    jlo = self%lbounds(2)
+    jhi = self%ubounds(2)
+    gather_coarray(ilo:ihi, jlo:jhi)[image] = self%data(ilo:ihi, jlo:jhi)
+
+    sync all
+
+    if(this_image() == image) gather = gather_coarray
     deallocate(gather_coarray)
   end function gather
 
@@ -504,7 +534,7 @@ contains
 
     if(lhs%domain_shape(1) == rhs%domain_shape(1) .and. &
        lhs%domain_shape(2) == rhs%domain_shape(2)) then
-        field_shapes_match = .true.
+      field_shapes_match = .true.
     end if
   end function field_shapes_match
 
@@ -515,7 +545,7 @@ contains
 
     if(lhs%domain_shape(1) == size(rhs, dim=1) .and. &
        lhs%domain_shape(2) == size(rhs, dim=2)) then
-        shapes_match = .true.
+      shapes_match = .true.
     end if
   end function shapes_match
 
@@ -527,90 +557,98 @@ contains
 
     integer(ik) :: sync_stat           !< syncronization status
     character(len=200) :: sync_err_msg !< syncronization error message (if any)
-    real(rk), dimension(:, :), allocatable, save :: left_edge[:]   !< (i, j)[image]; Coarray buffer to copy left neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: right_edge[:]  !< (i, j)[image]; Coarray buffer to copy right neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: top_edge[:]    !< (i, j)[image]; Coarray buffer to copy top neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: bottom_edge[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ilo_edge[:]   !< (i, j)[image]; Coarray buffer to copy left neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ihi_edge[:]  !< (i, j)[image]; Coarray buffer to copy right neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: jhi_edge[:]    !< (i, j)[image]; Coarray buffer to copy top neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: jlo_edge[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
 
-    real(rk), dimension(:, :), allocatable, save :: upper_left_corner[:]  !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: upper_right_corner[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: lower_left_corner[:]  !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
-    real(rk), dimension(:, :), allocatable, save :: lower_right_corner[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ilo_jhi_corner[:]  !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ihi_jhi_corner[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ilo_jlo_corner[:]  !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
+    real(rk), dimension(:, :), allocatable, save :: ihi_jlo_corner[:] !< (i, j)[image]; Coarray buffer to copy bottom neighbor halo data
 
-    if(enable_debug_print) call debug_print('Running sync_edges ', __FILE__, __LINE__)
+    integer(ik) :: ilo, ihi, jlo, jhi
+    integer(ik) :: ilo_halo, ihi_halo, jlo_halo, jhi_halo
+    integer(ik) :: nh, ni, nj
+    if(enable_debug_print) call debug_print('Running field_2d_t()%sync_edges ', __FILE__, __LINE__)
     sync_stat = 0
     sync_err_msg = ''
 
     ! Only allocate once, b/c this will cause an implicit sync all due to the coarray index
-    associate(ni => self%domain_shape(1), nj => self%domain_shape(2), n_halo => self%n_halo_cells)
-      if(.not. allocated(left_edge)) allocate(left_edge(n_halo, nj)[*])
-      if(.not. allocated(right_edge)) allocate(right_edge(n_halo, nj)[*])
-      if(.not. allocated(top_edge)) allocate(top_edge(ni, n_halo)[*])
-      if(.not. allocated(bottom_edge)) allocate(bottom_edge(ni, n_halo)[*])
+    ilo = self%lbounds(1)
+    ihi = self%ubounds(1)
+    jlo = self%lbounds(2)
+    jhi = self%ubounds(2)
+    ilo_halo = self%lbounds_halo(1)
+    ihi_halo = self%ubounds_halo(1)
+    jlo_halo = self%lbounds_halo(2)
+    jhi_halo = self%ubounds_halo(2)
+    nh = self%n_halo_cells
+    ni = self%domain_shape(1)
+    nj = self%domain_shape(2)
 
-      if(.not. allocated(upper_left_corner)) allocate(upper_left_corner(n_halo, n_halo)[*])
-      if(.not. allocated(lower_left_corner)) allocate(lower_left_corner(n_halo, n_halo)[*])
-      if(.not. allocated(upper_right_corner)) allocate(upper_right_corner(n_halo, n_halo)[*])
-      if(.not. allocated(lower_right_corner)) allocate(lower_right_corner(n_halo, n_halo)[*])
-    end associate
+    if(.not. allocated(ilo_edge)) allocate(ilo_edge(nh, nj)[*])
+    if(.not. allocated(ihi_edge)) allocate(ihi_edge(nh, nj)[*])
+    if(.not. allocated(jhi_edge)) allocate(jhi_edge(ni, nh)[*])
+    if(.not. allocated(jlo_edge)) allocate(jlo_edge(ni, nh)[*])
 
-    upper_left_corner = 0.0_rk
-    upper_right_corner = 0.0_rk
-    lower_left_corner = 0.0_rk
-    lower_right_corner = 0.0_rk
-    left_edge = 0.0_rk
-    right_edge = 0.0_rk
-    top_edge = 0.0_rk
-    bottom_edge = 0.0_rk
+    if(.not. allocated(ilo_jhi_corner)) allocate(ilo_jhi_corner(nh, nh)[*])
+    if(.not. allocated(ilo_jlo_corner)) allocate(ilo_jlo_corner(nh, nh)[*])
+    if(.not. allocated(ihi_jhi_corner)) allocate(ihi_jhi_corner(nh, nh)[*])
+    if(.not. allocated(ihi_jlo_corner)) allocate(ihi_jlo_corner(nh, nh)[*])
 
-    associate(ilo => self%lbounds(1), ihi => self%ubounds(1), &
-              jlo => self%lbounds(2), jhi => self%ubounds(2), &
-              ilo_halo => self%lbounds_halo(1), ihi_halo => self%ubounds_halo(1), &
-              jlo_halo => self%lbounds_halo(2), jhi_halo => self%ubounds_halo(2), &
-              nh => self%n_halo_cells, &
-              neighbors => self%neighbors)
+    ilo_jhi_corner = 0.0_rk
+    ihi_jhi_corner = 0.0_rk
+    ilo_jlo_corner = 0.0_rk
+    ihi_jlo_corner = 0.0_rk
+    ilo_edge = 0.0_rk
+    ihi_edge = 0.0_rk
+    jhi_edge = 0.0_rk
+    jlo_edge = 0.0_rk
 
-      sync images(set(self%neighbors), stat=sync_stat, errmsg=sync_err_msg)
-      if(sync_stat /= 0) then
-        write(std_err, '(a, i0, a)') "Error: unable to sync images in "//__FILE__//":", &
-          __LINE__, " sync_err_msg: '"//trim(sync_err_msg)//"'"
-        error stop "Unable to sync images, see standard error unit for more information"
-      endif
+    ! These were originally inside of an associate block, but testing shows that associate blocks
+    ! and coarray syntax don't always give the right behabior at runtime
 
-      ! Copy data into the coarray buffer. Data is not copied if the field is on the boundary, b/c this
-      ! transfer of data must be handled by boundary condition classes
-      ! We are transfering the cells from inside the real domain onto the halo cells of the neighbor domain. Since
-      ! the # of halo cells >= 1, we need to account for variable sizes.
+    sync images(set(self%neighbors), stat=sync_stat, errmsg=sync_err_msg)
+    if(sync_stat /= 0) then
+      write(std_err, '(a, i0, a)') "Error: unable to sync images in "//__FILE__//":", &
+        __LINE__, " sync_err_msg: '"//trim(sync_err_msg)//"'"
+      error stop "Unable to sync images, see standard error unit for more information"
+    endif
 
-      ! Send the current image's edge cells to become the halo of the neighbor
-      right_edge(:, :)[neighbors(left)] = self%data(ilo:ilo + nh - 1, jlo:jhi) ! send to left
-      left_edge(:, :)[neighbors(right)] = self%data(ihi - nh + 1:ihi, jlo:jhi) ! send to right
-      top_edge(:, :)[neighbors(down)] = self%data(ilo:ihi, jlo:jlo + nh - 1)   ! send to below
-      bottom_edge(:, :)[neighbors(up)] = self%data(ilo:ihi, jhi - nh + 1:jhi)  ! send to above
+    ! Copy data into the coarray buffer. Data is not copied if the field is on the boundary, b/c this
+    ! transfer of data must be handled by boundary condition classes
+    ! We are transfering the cells from inside the real domain onto the halo cells of the neighbor domain. Since
+    ! the # of halo cells >= 1, we need to account for variable sizes.
 
-      upper_left_corner(:, :)[neighbors(lower_right)] = self%data(ihi - nh + 1:ihi, jlo:jlo + nh - 1) ! send lower-right corner
-      lower_left_corner(:, :)[neighbors(upper_right)] = self%data(ihi - nh + 1:ihi, jhi - nh + 1:jhi) ! send upper-right corner
-      upper_right_corner(:, :)[neighbors(lower_left)] = self%data(ilo:ilo + nh - 1, jlo:jlo + nh - 1) ! send lower-left corner
-      lower_right_corner(:, :)[neighbors(upper_left)] = self%data(ilo:ilo + nh - 1, jhi - nh + 1:jhi) ! send upper-left corner
+    ! send the ihi edge data to the ilo edge of the neighbor on the ihi side
+    ilo_edge(:, :)[self%neighbors(ihi_neighbor)] = self%data(ihi - nh + 1:ihi, jlo:jhi)
+    ihi_edge(:, :)[self%neighbors(ilo_neighbor)] = self%data(ilo:ilo + nh - 1, jlo:jhi)
+    jhi_edge(:, :)[self%neighbors(jlo_neighbor)] = self%data(ilo:ihi, jlo:jlo + nh - 1)
+    jlo_edge(:, :)[self%neighbors(jhi_neighbor)] = self%data(ilo:ihi, jhi - nh + 1:jhi)
 
-      sync images(set(self%neighbors), stat=sync_stat, errmsg=sync_err_msg)
-      if(sync_stat /= 0) then
-        write(std_err, '(a, i0, a)') "Error: unable to sync images in "//__FILE__//":", &
-          __LINE__, " sync_err_msg: '"//trim(sync_err_msg)//"'"
-        error stop "Unable to sync images, see standard error unit for more information"
-      endif
+    ilo_jhi_corner(:, :)[self%neighbors(ihi_jlo_neighbor)] = self%data(ihi - nh + 1:ihi, jlo:jlo + nh - 1)
+    ilo_jlo_corner(:, :)[self%neighbors(ihi_jhi_neighbor)] = self%data(ihi - nh + 1:ihi, jhi - nh + 1:jhi)
+    ihi_jhi_corner(:, :)[self%neighbors(ilo_jlo_neighbor)] = self%data(ilo:ilo + nh - 1, jlo:jlo + nh - 1)
+    ihi_jlo_corner(:, :)[self%neighbors(ilo_jhi_neighbor)] = self%data(ilo:ilo + nh - 1, jhi - nh + 1:jhi)
 
-      ! Now copy the edge data to the halo cells of the current image
-      if(.not. self%on_ilo_bc) self%data(ilo_halo:ilo - 1, jlo:jhi) = right_edge  ! get the right edge from left neigbor
-      if(.not. self%on_ihi_bc) self%data(ihi + 1:ihi_halo, jlo:jhi) = left_edge   ! get the left edge from right neigbor
-      if(.not. self%on_jlo_bc) self%data(ilo:ihi, jlo_halo:jlo - 1) = top_edge    ! get the top edge from neighbor below
-      if(.not. self%on_jhi_bc) self%data(ilo:ihi, jhi + 1:jhi_halo) = bottom_edge ! get the bottom edge from neighbor above
+    sync images(set(self%neighbors), stat=sync_stat, errmsg=sync_err_msg)
+    if(sync_stat /= 0) then
+      write(std_err, '(a, i0, a)') "Error: unable to sync images in "//__FILE__//":", &
+        __LINE__, " sync_err_msg: '"//trim(sync_err_msg)//"'"
+      error stop "Unable to sync images, see standard error unit for more information"
+    endif
 
-      if(.not. self%on_ihi_bc .and. .not. self%on_jhi_bc) self%data(ihi + 1:ihi_halo, jhi + 1:jhi_halo) = lower_left_corner ! get the lower-left corner from upper-right neighbor
-      if(.not. self%on_ilo_bc .and. .not. self%on_jhi_bc) self%data(ilo_halo:ilo - 1, jhi + 1:jhi_halo) = lower_right_corner ! get the lower-right corner from upper-left neighbor
-      if(.not. self%on_ihi_bc .and. .not. self%on_jlo_bc) self%data(ihi + 1:ihi_halo, jlo_halo:jlo - 1) = upper_left_corner ! get the upper-left corner from lower-right neighbor
-      if(.not. self%on_ilo_bc .and. .not. self%on_jlo_bc) self%data(ilo_halo:ilo - 1, jlo_halo:jlo - 1) = upper_right_corner ! get the upper-right corner from lower-left neighbor
-    end associate
+    ! Now copy the edge data to the halo cells of the current image
+    if(.not. self%on_ilo_bc) self%data(ilo_halo:ilo - 1, jlo:jhi) = ilo_edge
+    if(.not. self%on_ihi_bc) self%data(ihi + 1:ihi_halo, jlo:jhi) = ihi_edge
+    if(.not. self%on_jlo_bc) self%data(ilo:ihi, jlo_halo:jlo - 1) = jlo_edge
+    if(.not. self%on_jhi_bc) self%data(ilo:ihi, jhi + 1:jhi_halo) = jhi_edge
+
+    if(.not. self%on_ihi_bc .and. .not. self%on_jhi_bc) self%data(ihi + 1:ihi_halo, jhi + 1:jhi_halo) = ihi_jhi_corner
+    if(.not. self%on_ilo_bc .and. .not. self%on_jhi_bc) self%data(ilo_halo:ilo - 1, jhi + 1:jhi_halo) = ilo_jhi_corner
+    if(.not. self%on_ihi_bc .and. .not. self%on_jlo_bc) self%data(ihi + 1:ihi_halo, jlo_halo:jlo - 1) = ihi_jlo_corner
+    if(.not. self%on_ilo_bc .and. .not. self%on_jlo_bc) self%data(ilo_halo:ilo - 1, jlo_halo:jlo - 1) = ilo_jlo_corner
 
   end subroutine sync_edges
 
@@ -655,10 +693,10 @@ contains
     write(unit, '(a, 2(i0, 1x), a)') "global_dims: ", self%global_dims, nl
     write(unit, '(a, 2(i0, 1x), a)') "domain_shape: ", self%domain_shape, nl
     write(unit, '(a, 2(i0, 1x), a)') "data_shape: ", shape(self%data), nl
-    write(unit, '(a, i0, a)') "left neighbor : ", self%neighbors(left), nl
-    write(unit, '(a, i0, a)') "right neighbor: ", self%neighbors(right), nl
-    write(unit, '(a, i0, a)') "down neighbor : ", self%neighbors(down), nl
-    write(unit, '(a, i0, a)') "up neighbor   : ", self%neighbors(up), nl
+    write(unit, '(a, i0, a)') "left neighbor : ", self%neighbors(ilo_neighbor), nl
+    write(unit, '(a, i0, a)') "right neighbor: ", self%neighbors(ihi_neighbor), nl
+    write(unit, '(a, i0, a)') "down neighbor : ", self%neighbors(jlo_neighbor), nl
+    write(unit, '(a, i0, a)') "up neighbor   : ", self%neighbors(jhi_neighbor), nl
 
     write(unit, '(a, 2(i0, 1x), a)') "lbounds: ", self%lbounds, nl
     write(unit, '(a, 2(i0, 1x), a)') "ubounds: ", self%ubounds, nl
@@ -674,28 +712,44 @@ contains
   ! I/O for HDF5
   ! --------------------------------------------------------------------
   subroutine read_from_h5(self, filename, dataset)
-    !< Read in the data from an hdf5 file. This will read from the 
-    !< file and only grab the per-image data, e.g. each field will
+    !< Read in the data from an hdf5 file. This will read from the
+    !< file and only grab the per-image data, e.g. each grid block will
     !< only read from the indices it has been assigned with respect
     !< to the global domain.
     class(field_2d_t), intent(inout) :: self
     character(len=*), intent(in) :: filename
     character(len=*), intent(in) :: dataset
+
     type(hdf5_file) :: h5
+    integer(ik) :: alloc_status, ilo, ihi, jlo, jhi
+    logical :: file_exists
+    character(32) :: str_buff = ''
+    character(300) :: msg = ''
+    real(rk), allocatable, dimension(:, :) :: data
+
+    integer(hsize_t), allocatable :: dims(:)
+
+    file_exists = .false.
+    inquire(file=filename, exist=file_exists)
+
+    if(.not. file_exists) then
+      call error_msg(module_name='mod_field', class_name='field_2d_t', &
+                     procedure_name='read_from_h5', &
+                     message='file not found: "'//filename//'"', &
+                     file_name=__FILE__, line_number=__LINE__)
+    end if
 
     call h5%initialize(filename=trim(filename), status='old', action='r')
-
-    ! Read on a per-image basis
-    associate(ilo=>self%ilo, ihi=>self%ihi, jlo=>self%jlo, jhi=>self%jhi)
-      call h5%read(dname=dataset, value=self%data(ilo:ihi, jlo:jhi), &
-                   istart=[ilo, jhi], iend=[jlo, jhi])
-
-      call h5%readattr(dname=dataset, attr='units', attrval=self%units)
-      call h5%readattr(dname=dataset, attr='description', attrval=self%description)
-    end associate
+    ! I couldn't get the slice read to work, so we read the whole array
+    ! in and extract the slice later
+    call h5%shape(dataset, dims)
+    allocate(data(dims(1), dims(2)))
+    call h5%read(dname=dataset, value=data)
+    self%data = data(self%lbounds_halo(1) + self%n_halo_cells:self%ubounds_halo(1) + self%n_halo_cells, &
+                     self%lbounds_halo(2) + self%n_halo_cells:self%ubounds_halo(2) + self%n_halo_cells)
     call h5%finalize()
   end subroutine read_from_h5
-  
+
   subroutine write_to_h5(self, filename, dataset)
     !< Write the global data to an hdf5 file. This gathers all to image 1 and
     !< writes to a single file. Technically, this could be done in parallel
@@ -818,7 +872,7 @@ contains
     !< Cleanup the field_2d_t object
     type(field_2d_t), intent(inout) :: self
 
-    if(enable_debug_print) call debug_print('Running field_2d_t%finalize() for "'//self%name//'"', __FILE__, __LINE__)
+    if(enable_debug_print) call debug_print('Running field_2d_t%finalize()', __FILE__, __LINE__)
 
     if(allocated(self%data)) deallocate(self%data)
     if(allocated(self%units)) deallocate(self%units)
@@ -879,14 +933,16 @@ contains
 
     if(enable_debug_print) call debug_print('Running assign_field ', __FILE__, __LINE__)
     call from_field(lhs, f)
-    call lhs%sync_edges()
+
+    if (lhs%sync_on_equal) call lhs%sync_edges()
   end subroutine assign_field
 
-  pure subroutine assign_real_scalar(lhs, a)
+  subroutine assign_real_scalar(lhs, a)
     !< Implementation of the (=) operator from a real scalar
     class(field_2d_t), intent(inout) :: lhs !< left-hand-side of the operation
     real(rk), intent(in) :: a
     lhs%data = a
+    if (lhs%sync_on_equal) call lhs%sync_edges()
   end subroutine assign_real_scalar
 
   ! --------------------------------------------------------------------
@@ -938,7 +994,7 @@ contains
     if(.not. field_shapes_match(lhs, f)) then
       error stop "Error in field_2d_t%field_add_field(): field_2d_t shapes don't match"
     end if
-    
+
     if(lhs%use_gpu) then
       call field_mul_field_gpu(lhs, f, res)
     else
@@ -957,7 +1013,7 @@ contains
     if(.not. field_shapes_match(lhs, f)) then
       error stop "Error in field_2d_t%field_add_field(): field_2d_t shapes don't match"
     end if
-    
+
     if(lhs%use_gpu) then
       call field_div_field_gpu(lhs, f, res)
     else
@@ -1025,7 +1081,7 @@ contains
     if(.not. shapes_match(rhs, x)) then
       error stop "Error in field_2d_t%real_2d_add_field(): field_2d_t and x shapes don't match"
     end if
-    
+
     ! Reuse the field + 2d version
     if(rhs%use_gpu) then
       call field_add_real_2d_gpu(rhs, x, res)
@@ -1168,7 +1224,7 @@ contains
     if(.not. shapes_match(rhs, x)) then
       error stop "Error in field_2d_t%real_2d_div_field(): field_2d_t and x shapes don't match"
     end if
-    
+
     if(rhs%use_gpu) then
       call real_2d_div_field_gpu(x, rhs, res)
     else
@@ -1296,7 +1352,7 @@ contains
       res = field_minloc_cpu(self)
     end if
   end function field_minloc
-  
+
   function field_sum(self) result(res)
     class(field_2d_t), intent(in) :: self
     real(rk) :: res
@@ -1309,4 +1365,4 @@ contains
     end if
   end function field_sum
 
-end module mod_field_2d
+end module mod_field

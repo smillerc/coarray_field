@@ -16,6 +16,7 @@ target_link_libraries(h5fortran ${HDF5_LIBRARIES} ${HDF5_HL_LIBRARIES})
 add_library(field
   mod_parallel.f90 
   globals.f90 
+  error.f90
   field_2d/field_2d.f90 
   field_2d/field_2d_cpu_operators.f90 
   field_2d/field_2d_gpu_operators.f90)
